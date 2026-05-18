@@ -1,0 +1,231 @@
+[
+  {
+    "alert_id": "1777889235.60551",
+    "timestamp": "2026-05-04T10:28:33.178985+00:00",
+    "agent_name": "vm1",
+    "severity": "medium",
+    "threat_type": "package installation",
+    "is_fp": false,
+    "escalated": true,
+    "triage": {
+      "severity": "medium",
+      "threat_type": "package installation",
+      "is_false_positive": false,
+      "confidence": 0.8,
+      "justification": "The installation of a new package can indicate potential changes to the system that may require further investigation.",
+      "escalate": true
+    },
+    "enrichment": {}
+  },
+  {
+    "alert_id": "1777889235.60551",
+    "timestamp": "2026-05-04T10:28:52.562772+00:00",
+    "agent_name": "vm1",
+    "severity": "medium",
+    "threat_type": "package installation",
+    "is_fp": false,
+    "escalated": true,
+    "triage": {
+      "severity": "medium",
+      "threat_type": "package installation",
+      "is_false_positive": false,
+      "confidence": 0.8,
+      "justification": "The installation of a new package can indicate potential changes to the system that may require further investigation.",
+      "escalate": true
+    },
+    "enrichment": {
+      "agent_info": {
+        "id": "001",
+        "name": "vm1",
+        "ip": "192.168.56.111",
+        "os": "Ubuntu 22.04.5 LTS (x86_64)"
+      },
+      "open_ports": [
+        "tcp: 127.0.0.1:32771 (LISTENING, containerd)",
+        "tcp: 0.0.0.0:22 (LISTENING, sshd)",
+        "tcp: 127.0.0.53:53 (LISTENING, systemd-resolve)"
+      ],
+      "vulnerabilities": [
+        "CVE-2026-5121: A flaw in libarchive leading to potential arbitrary code execution.",
+        "CVE-2025-12198: Withdrawn candidate, not a security issue.",
+        "CVE-2022-41409: Integer overflow vulnerability in pcre2test causing denial of service.",
+        "CVE-2022-4899: Buffer overrun vulnerability in zstd v1.4.10.",
+        "CVE-2021-21240: Denial of service in httplib2 due to malicious server responses.",
+        "CVE-2018-6952: Double free vulnerability in GNU patch."
+      ],
+      "risk_indicators": [
+        "Installation of new dpkg package detected.",
+        "Multiple high severity vulnerabilities present."
+      ],
+      "context_summary": "The agent 'vm1' is running Ubuntu 22.04.5 LTS and has several open TCP ports, including SSH. It has multiple high severity vulnerabilities, including a critical flaw in libarchive that could allow arbitrary code execution. The recent installation of a new package may require further investigation due to these vulnerabilities."
+    }
+  },
+  {
+    "alert_id": "1777889235.60551",
+    "timestamp": "2026-05-04T10:33:33.010652+00:00",
+    "agent_name": "vm1",
+    "severity": "medium",
+    "threat_type": "package installation",
+    "is_fp": false,
+    "escalated": true,
+    "triage": {
+      "severity": "medium",
+      "threat_type": "package installation",
+      "is_false_positive": false,
+      "confidence": 0.8,
+      "justification": "The installation of a new dpkg package can indicate potential changes to the system that may require further investigation.",
+      "escalate": true
+    },
+    "enrichment": {}
+  },
+  {
+    "alert_id": "1777889235.60551",
+    "timestamp": "2026-05-04T10:33:43.031644+00:00",
+    "agent_name": "vm1",
+    "severity": "medium",
+    "threat_type": "package installation",
+    "is_fp": false,
+    "escalated": true,
+    "triage": {
+      "severity": "medium",
+      "threat_type": "package installation",
+      "is_false_positive": false,
+      "confidence": 0.8,
+      "justification": "The installation of a new dpkg package can indicate potential changes to the system that may require further investigation.",
+      "escalate": true
+    },
+    "enrichment": {
+      "agent_info": {
+        "id": "001",
+        "name": "vm1",
+        "ip": "192.168.56.111",
+        "os": "Ubuntu 22.04.5 LTS"
+      },
+      "open_ports": [
+        "127.0.0.1:32771",
+        "0.0.0.0:22",
+        "127.0.0.53:53"
+      ],
+      "vulnerabilities": [
+        "CVE-2026-5121: A flaw in libarchive leading to potential arbitrary code execution.",
+        "CVE-2022-41409: Integer overflow vulnerability in pcre2test causing denial of service.",
+        "CVE-2022-4899: Buffer overrun vulnerability in zstd v1.4.10.",
+        "CVE-2021-21240: Denial of service in httplib2 due to malicious server responses.",
+        "CVE-2018-6952: Double free vulnerability in GNU patch."
+      ],
+      "risk_indicators": [
+        "New dpkg package installed.",
+        "Multiple high severity vulnerabilities present."
+      ],
+      "context_summary": "The agent 'vm1' is running Ubuntu 22.04.5 LTS and has several open TCP ports, including SSH. It has multiple high severity vulnerabilities, including a critical flaw in libarchive that could allow arbitrary code execution. The recent installation of a new package may require further investigation due to these vulnerabilities."
+    }
+  },
+  {
+    "alert_id": "1778706743.648",
+    "timestamp": "2026-05-18T09:14:23.929819+00:00",
+    "agent_name": "wazuh.master",
+    "severity": "medium",
+    "threat_type": "compliance",
+    "is_fp": false,
+    "escalated": true,
+    "triage": {
+      "severity": "medium",
+      "threat_type": "compliance",
+      "is_false_positive": false,
+      "confidence": 0.9,
+      "justification": "The score of less than 80% indicates potential compliance issues that may require remediation.",
+      "escalate": true
+    },
+    "enrichment": {}
+  },
+  {
+    "alert_id": "1778706743.648",
+    "timestamp": "2026-05-18T09:14:35.866526+00:00",
+    "agent_name": "wazuh.master",
+    "severity": "medium",
+    "threat_type": "compliance",
+    "is_fp": false,
+    "escalated": true,
+    "triage": {
+      "severity": "medium",
+      "threat_type": "compliance",
+      "is_false_positive": false,
+      "confidence": 0.9,
+      "justification": "The score of less than 80% indicates potential compliance issues that may require remediation.",
+      "escalate": true
+    },
+    "enrichment": {
+      "agent_info": {
+        "id": "000",
+        "name": "wazuh.master",
+        "ip": "127.0.0.1",
+        "os": "Amazon Linux 2023 (x86_64)"
+      },
+      "open_ports": [
+        "tcp: 127.0.0.11:35773",
+        "tcp: 0.0.0.0:1515",
+        "tcp: 0.0.0.0:55000",
+        "tcp: 0.0.0.0:1514",
+        "tcp: 0.0.0.0:1516"
+      ],
+      "vulnerabilities": [],
+      "risk_indicators": [],
+      "context_summary": "The Wazuh agent 'wazuh.master' is running on Amazon Linux 2023 and has a compliance score of 52%, indicating potential compliance issues. There are no critical or high vulnerabilities detected, and several TCP ports are in a listening state."
+    }
+  },
+  {
+    "alert_id": "1779052343.994",
+    "timestamp": "2026-05-18T10:49:52.552022+00:00",
+    "agent_name": "wazuh.master",
+    "severity": "medium",
+    "threat_type": "compliance",
+    "is_fp": false,
+    "escalated": true,
+    "triage": {
+      "severity": "medium",
+      "threat_type": "compliance",
+      "is_false_positive": false,
+      "confidence": 0.9,
+      "justification": "The compliance score of 51% indicates potential compliance issues that may require remediation.",
+      "escalate": true
+    },
+    "enrichment": {}
+  },
+  {
+    "alert_id": "1779052343.994",
+    "timestamp": "2026-05-18T10:50:04.995709+00:00",
+    "agent_name": "wazuh.master",
+    "severity": "medium",
+    "threat_type": "compliance",
+    "is_fp": false,
+    "escalated": true,
+    "triage": {
+      "severity": "medium",
+      "threat_type": "compliance",
+      "is_false_positive": false,
+      "confidence": 0.9,
+      "justification": "The compliance score of 51% indicates potential compliance issues that may require remediation.",
+      "escalate": true
+    },
+    "enrichment": {
+      "agent_info": {
+        "id": "000",
+        "name": "wazuh.master",
+        "ip": "127.0.0.1",
+        "os": "Amazon Linux 2023 (x86_64)"
+      },
+      "open_ports": [
+        "127.0.0.11:35773",
+        "0.0.0.0:1515",
+        "0.0.0.0:55000",
+        "0.0.0.0:1514",
+        "0.0.0.0:1516"
+      ],
+      "vulnerabilities": [],
+      "risk_indicators": [
+        "Compliance score of 51% based on CIS Benchmark for Amazon Linux 2023."
+      ],
+      "context_summary": "The Wazuh agent 'wazuh.master' is running on Amazon Linux 2023 with a compliance score of 51%, indicating potential compliance issues. There are several TCP ports in a listening state, but no vulnerabilities have been detected."
+    }
+  }
+]

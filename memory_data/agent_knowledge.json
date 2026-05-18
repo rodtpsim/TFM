@@ -1,0 +1,22 @@
+{
+  "vm1": {
+    "ip": "192.168.56.111",
+    "last_seen": "2026-05-04T10:33:43.030889+00:00",
+    "cves": [
+      "CVE-2026-5121: A flaw in libarchive leading to potential arbitrary code execution.",
+      "CVE-2022-41409: Integer overflow vulnerability in pcre2test causing denial of service.",
+      "CVE-2022-4899: Buffer overrun vulnerability in zstd v1.4.10.",
+      "CVE-2021-21240: Denial of service in httplib2 due to malicious server responses.",
+      "CVE-2018-6952: Double free vulnerability in GNU patch."
+    ],
+    "risk_level": "medium",
+    "notes": "The agent 'vm1' is running Ubuntu 22.04.5 LTS and has several open TCP ports, including SSH. It has multiple high severity vulnerabilities, including a critical flaw in libarchive that could allow arbitrary code execution. The recent installation of a new package may require further investigation due to these vulnerabilities."
+  },
+  "wazuh.master": {
+    "ip": "127.0.0.1",
+    "last_seen": "2026-05-18T10:50:04.994853+00:00",
+    "cves": [],
+    "risk_level": "medium",
+    "notes": "The Wazuh agent 'wazuh.master' is running on Amazon Linux 2023 with a compliance score of 51%, indicating potential compliance issues. There are several TCP ports in a listening state, but no vulnerabilities have been detected."
+  }
+}

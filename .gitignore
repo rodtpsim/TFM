@@ -1,23 +1,2 @@
-# Secrets — nunca al repositorio
 .env
 .env.secrets
-*.secrets
-
-# Python
-venv/
-__pycache__/
-*.pyc
-*.pyo
-.pytest_cache/
-
-# Resultados de tests y memoria
-test_results*.jsonl
-memory_data/
-
-# Docker
-*.tar
-*.tar.gz
-
-# Editor
-.vscode/
-*.swp
