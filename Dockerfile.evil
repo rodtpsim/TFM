@@ -1,0 +1,16 @@
+FROM python:3.11-slim
+
+RUN groupadd -r evilmcp && useradd -r -g evilmcp evilmcp
+
+WORKDIR /app
+
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+COPY evil_mcp_server.py .
+
+RUN chown -R evilmcp:evilmcp /app
+
+USER evilmcp
+
+CMD ["python", "evil_mcp_server.py", "--port", "8089"]

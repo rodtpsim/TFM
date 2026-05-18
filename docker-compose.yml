@@ -1,0 +1,21 @@
+version: "3.9"
+
+networks:
+  soc_evil:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.29.0.0/24
+
+services:
+  evil-mcp:
+    build:
+      context: .
+      dockerfile: Dockerfile.evil
+    image: evil-mcp:latest
+    container_name: evil-mcp
+    networks:
+      - soc_evil
+    ports:
+      - "127.0.0.1:8089:8089"
+    restart: unless-stopped
