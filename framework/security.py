@@ -11,7 +11,12 @@ OWASP controls implemented (Practical Guide for Secure MCP Server Development v1
   Section 3 - Data Validation and Resource Management:
     Layer 3 Input validator      JSON schema validation per tool (via tool_schemas.py)
                                  + regex injection patterns + inter-agent trust
+                                 + external data validation (malicious data injection)
     Layer 4 Output validator     Pattern matching + 100KB size limit
+                                 + credential/API key exfiltration patterns
+                                 + system prompt extraction patterns
+                                 + agent self-propagation patterns
+                                 + external content mode (web content poisoning)
 
   Section 4 - Prompt Injection Controls:
     Layer 3 Input validator      Argument and handoff scanning
@@ -61,15 +66,12 @@ logger = logging.getLogger(__name__)
 
 # ══════════════════════════════════════════════════════════════════════════════
 # SENSITIVE FIELD REDACTION
-# OWASP Section 7: "Use field-level allowlists and redaction/hashing to
-# prevent sensitive data from entering verbose logs."
 # ══════════════════════════════════════════════════════════════════════════════
 
 _SENSITIVE_FIELDS = {"rule_xml", "api_key", "token", "password", "secret"}
 
 
 def _redact(arguments: dict) -> dict:
-    """Return a copy of arguments with sensitive fields hashed."""
     result = {}
     for k, v in arguments.items():
         if k in _SENSITIVE_FIELDS and isinstance(v, str):
@@ -81,8 +83,6 @@ def _redact(arguments: dict) -> dict:
 
 # ══════════════════════════════════════════════════════════════════════════════
 # SAFE ERROR RESPONSES
-# OWASP Section 6: "Do not return stack traces, tokens, filesystem paths, or
-# tool internals in responses returned to the model/client."
 # ══════════════════════════════════════════════════════════════════════════════
 
 _SAFE_ERRORS = {
@@ -93,12 +93,12 @@ _SAFE_ERRORS = {
     "blocked_interagent": "Handoff blocked: upstream agent output failed trust validation.",
     "blocked_memory":     "Context blocked: persistent context failed validation.",
     "blocked_schema":     "Tool call blocked: argument schema validation failed.",
+    "blocked_data":       "Data blocked: external data failed validation.",
     "error":              "Tool call failed: an internal error occurred.",
 }
 
 
 def safe_error_message(outcome: str) -> str:
-    """Return a safe, non-revealing error message for the given outcome."""
     return _SAFE_ERRORS.get(outcome, "Tool call blocked.")
 
 
@@ -139,11 +139,9 @@ class AccessControl:
     def check(self, agent_role: str, tool_name: str) -> None:
         allowed = AGENT_PERMISSIONS.get(agent_role, set())
         if tool_name not in allowed:
-            msg = (
-                f"[ACCESS CONTROL] BLOCKED: "
-                f"'{agent_role}' cannot call '{tool_name}'."
+            logger.warning(
+                f"[ACCESS CONTROL] BLOCKED: '{agent_role}' cannot call '{tool_name}'."
             )
-            logger.warning(msg)
             raise PermissionError(safe_error_message("blocked_access"))
 
     def filter_tools(self, agent_role: str, all_tools: list) -> list:
@@ -153,7 +151,6 @@ class AccessControl:
 
 # ══════════════════════════════════════════════════════════════════════════════
 # LAYER 2 — RATE LIMITER
-# OWASP Section 3: "Impose quotas and rate limits on tool invocations."
 # ══════════════════════════════════════════════════════════════════════════════
 
 RATE_LIMITS: dict[str, dict] = {
@@ -179,11 +176,10 @@ class RateLimiter:
             t for t in self._calls[agent_role] if now - t < window
         ]
         if len(self._calls[agent_role]) >= max_calls:
-            msg = (
+            logger.warning(
                 f"[RATE LIMITER] BLOCKED: "
                 f"'{agent_role}' exceeded {max_calls} calls in {window}s."
             )
-            logger.warning(msg)
             raise RuntimeError(safe_error_message("blocked_rate"))
         self._calls[agent_role].append(now)
 
@@ -198,8 +194,6 @@ class RateLimiter:
 
 # ══════════════════════════════════════════════════════════════════════════════
 # LAYER 3 — INPUT VALIDATOR
-# OWASP Section 3: JSON schema validation for tool inputs.
-# OWASP Section 4: Prompt injection controls, memory poisoning, inter-agent trust.
 # ══════════════════════════════════════════════════════════════════════════════
 
 _INJECTION_PATTERNS = [
@@ -222,6 +216,19 @@ _INJECTION_PATTERNS = [
 ]
 _COMPILED_INJECTION = [re.compile(p, re.IGNORECASE) for p in _INJECTION_PATTERNS]
 
+# ── [NEW] External data patterns (malicious data injection)
+# Applied to data that enters the pipeline from external sources before
+# being stored in memory or passed to agents.
+_EXTERNAL_DATA_PATTERNS = _INJECTION_PATTERNS + [
+    r"<script[^>]*>",
+    r"javascript\s*:",
+    r"data\s*:\s*text/html",
+    r"on(load|error|click|mouseover)\s*=",
+    r"\beval\s*\(",
+    r"document\.(cookie|write|location)",
+]
+_COMPILED_EXTERNAL = [re.compile(p, re.IGNORECASE) for p in _EXTERNAL_DATA_PATTERNS]
+
 
 @dataclass
 class ValidationResult:
@@ -230,10 +237,17 @@ class ValidationResult:
     outcome: str = "allowed"
 
 
+# Expected handoff sequence — enforces sequential pipeline order
+_HANDOFF_SEQUENCE = {
+    "triage_agent":     "enrichment_agent",
+    "enrichment_agent": "response_agent",
+}
+
+
 class InputValidator:
 
     def validate(self, tool_name: str, arguments: dict) -> ValidationResult:
-        # 1. JSON schema validation (OWASP Section 3)
+        # 1. JSON schema validation
         schema = TOOL_SCHEMAS.get(tool_name)
         if schema and _JSONSCHEMA_AVAILABLE:
             try:
@@ -249,7 +263,7 @@ class InputValidator:
                     outcome="blocked_schema",
                 )
 
-        # 2. Injection pattern scan
+        # 2. Injection pattern scan on argument values
         for key, value in arguments.items():
             if isinstance(value, str):
                 for pattern in _COMPILED_INJECTION:
@@ -265,8 +279,27 @@ class InputValidator:
 
         return ValidationResult(passed=True)
 
-    def validate_agent_output(self, source_agent: str, output: str) -> ValidationResult:
-        """Inter-agent trust validation."""
+    def validate_agent_output(self, source_agent: str, output: str,
+                               expected_target: str = None) -> ValidationResult:
+        """
+        Inter-agent trust validation.
+        Also enforces handoff sequence order to prevent identity spoofing.
+        """
+        # Sequence enforcement (identity spoofing / agent impersonation)
+        if expected_target is not None:
+            allowed_target = _HANDOFF_SEQUENCE.get(source_agent)
+            if allowed_target and expected_target != allowed_target:
+                return ValidationResult(
+                    passed=False,
+                    reason=(
+                        f"[INTER-AGENT TRUST] BLOCKED: "
+                        f"'{source_agent}' attempted handoff to '{expected_target}' "
+                        f"but expected '{allowed_target}'. Possible agent impersonation."
+                    ),
+                    outcome="blocked_interagent",
+                )
+
+        # Injection pattern scan on handoff content
         for pattern in _COMPILED_INJECTION:
             if pattern.search(output):
                 return ValidationResult(
@@ -295,13 +328,32 @@ class InputValidator:
                         )
         return ValidationResult(passed=True)
 
+    def validate_external_data(self, source: str, data: str) -> ValidationResult:
+        """
+        [NEW] Malicious data injection validation.
+        Applied to data retrieved from external sources (web feeds, external APIs)
+        before it enters the pipeline or is stored in memory.
+        Covers: malicious data injection, web content poisoning (partial).
+        """
+        for pattern in _COMPILED_EXTERNAL:
+            if pattern.search(data):
+                return ValidationResult(
+                    passed=False,
+                    reason=(
+                        f"[EXTERNAL DATA] BLOCKED: "
+                        f"Data from '{source}' contains malicious content."
+                    ),
+                    outcome="blocked_data",
+                )
+        return ValidationResult(passed=True)
+
 
 # ══════════════════════════════════════════════════════════════════════════════
 # LAYER 4 — OUTPUT VALIDATOR
-# OWASP Section 3: Enforce size limits on all outputs from tools.
 # ══════════════════════════════════════════════════════════════════════════════
 
 _OUTPUT_PATTERNS = [
+    # Indirect prompt injection
     r"ignore\s+(all\s+)?(previous|prior)\s+instructions?",
     r"you\s+are\s+now\s+",
     r"new\s+instructions?:",
@@ -312,14 +364,62 @@ _OUTPUT_PATTERNS = [
     r"your\s+new\s+(task|goal|objective)\s+is",
     r"mandatory\s+(action|requirement|protocol)",
     r"(required|must)\s+(call|invoke|execute|run)\s+tool",
+
+    # [NEW] Credential / API key exfiltration
+    r"sk-[a-zA-Z0-9]{20,}",
+    r"Bearer\s+[a-zA-Z0-9\-_\.]{20,}",
+    r"api[_\-]?key\s*[:=]\s*[a-zA-Z0-9\-_]{16,}",
+    r"password\s*[:=]\s*\S{8,}",
+    r"secret\s*[:=]\s*\S{8,}",
+    r"token\s*[:=]\s*[a-zA-Z0-9\-_\.]{16,}",
+    r"Authorization:\s*(Bearer|Basic)\s+\S+",
+
+    # [NEW] LLM system prompt extraction
+    r"(my|the|your)\s+system\s+prompt\s+(is|says|reads|contains)",
+    r"(my|the|your)\s+instructions?\s+(are|is|say|read|include):",
+    r"(above|following)\s+(are|is)\s+(my|the|your)\s+(instructions?|prompt|directives?)",
+    r"i\s+(was|am|have\s+been)\s+(instructed|told|directed|prompted)\s+to",
+    r"(initial|original|base)\s+(system\s+)?(prompt|instructions?)\s*(:|is|are|says)",
+
+    # [NEW] Agent self-propagation (AI virus)
+    r"copy\s+(this|the\s+following)\s+(instruction|prompt|payload)\s+to",
+    r"forward\s+(this|the\s+following)\s+(message|instruction|payload)\s+to",
+    r"replicate\s+(yourself|this\s+instruction|this\s+payload)",
+    r"inject\s+(the\s+following|this)\s+(into\s+)?(the\s+next|downstream|other)\s+agent",
+    r"pass\s+(this|the\s+following)\s+(payload|instruction)\s+(along|forward|to\s+the\s+next)",
 ]
 _COMPILED_OUTPUT = [re.compile(p, re.IGNORECASE) for p in _OUTPUT_PATTERNS]
+
+# [NEW] Additional patterns for external content mode (web content poisoning)
+# More aggressive scan applied when output comes from tools that fetch
+# external web content rather than structured SIEM data.
+_EXTERNAL_CONTENT_PATTERNS = _OUTPUT_PATTERNS + [
+    r"<script[^>]*>",
+    r"javascript\s*:",
+    r"on(load|error|click|mouseover)\s*=",
+    r"<iframe[^>]*>",
+    r"<object[^>]*>",
+    r"document\.(cookie|write|location)",
+    r"window\.(location|open|eval)",
+    r"\beval\s*\(",
+    r"data\s*:\s*text/html",
+]
+_COMPILED_EXTERNAL_OUTPUT = [re.compile(p, re.IGNORECASE) for p in _EXTERNAL_CONTENT_PATTERNS]
+
 MAX_OUTPUT_BYTES = 100_000
+
+# Tools that fetch external web content — apply stricter validation
+_EXTERNAL_CONTENT_TOOLS = {
+    "get_threat_intelligence",
+    "get_vulnerability_feed",
+    "get_compliance_report",
+}
 
 
 class OutputValidator:
 
     def validate(self, tool_name: str, raw_output: str) -> ValidationResult:
+        # Size limit
         if len(raw_output) > MAX_OUTPUT_BYTES:
             return ValidationResult(
                 passed=False,
@@ -330,13 +430,24 @@ class OutputValidator:
                 ),
                 outcome="blocked_output",
             )
-        for pattern in _COMPILED_OUTPUT:
+
+        # [NEW] Select pattern set based on tool origin
+        # External content tools (web feeds, threat intel) get stricter validation
+        # covering web content poisoning vectors in addition to standard patterns.
+        if tool_name in _EXTERNAL_CONTENT_TOOLS:
+            patterns = _COMPILED_EXTERNAL_OUTPUT
+            mode = "external"
+        else:
+            patterns = _COMPILED_OUTPUT
+            mode = "standard"
+
+        for pattern in patterns:
             if pattern.search(raw_output):
                 return ValidationResult(
                     passed=False,
                     reason=(
-                        f"[OUTPUT VALIDATOR] BLOCKED: "
-                        f"Tool poisoning in '{tool_name}' response."
+                        f"[OUTPUT VALIDATOR] BLOCKED ({mode}): "
+                        f"Malicious content in '{tool_name}' response."
                     ),
                     outcome="blocked_output",
                 )
@@ -345,10 +456,6 @@ class OutputValidator:
 
 # ══════════════════════════════════════════════════════════════════════════════
 # TOOL REGISTRATION VALIDATOR + VERSION PINNING
-# OWASP Section 2: Tool description validation at load time.
-# OWASP Section 7: "Use cryptographic signing and version pinning for all tools."
-# Partial rug pull mitigation: hash the tool manifest at first connect and
-# detect changes on reconnect.
 # ══════════════════════════════════════════════════════════════════════════════
 
 _TOOL_DESC_PATTERNS = [
@@ -366,7 +473,6 @@ _COMPILED_DESC = [re.compile(p, re.IGNORECASE) for p in _TOOL_DESC_PATTERNS]
 
 
 def _manifest_hash(tools: list) -> str:
-    """Compute a deterministic SHA-256 hash of a tool manifest."""
     canonical = json.dumps(
         sorted([{"name": t["name"], "description": t.get("description", "")}
                 for t in tools],
@@ -404,7 +510,6 @@ class ToolRegistrationValidator:
             else:
                 clean.append(tool)
 
-        # Version pinning: detect manifest changes across reconnects
         current_hash = _manifest_hash(tools)
         if server_url in self._pinned_hashes:
             if self._pinned_hashes[server_url] != current_hash:
@@ -434,38 +539,39 @@ class ToolRegistrationValidator:
 
 # ══════════════════════════════════════════════════════════════════════════════
 # LAYER 5 — AUDIT LOG
-# OWASP Section 7: Immutable audit trail with field-level redaction.
 # ══════════════════════════════════════════════════════════════════════════════
 
 @dataclass
 class AuditEntry:
     timestamp:   str
+    session_id:  str
     agent_role:  str
     tool_name:   str
-    arguments:   dict      # redacted
+    arguments:   dict
     outcome:     str
     detail:      Optional[str] = None
     result_hash: Optional[str] = None
-
+ 
     def to_dict(self) -> dict:
         return asdict(self)
 
 
 class AuditLog:
-
-    def __init__(self):
+ 
+    def __init__(self, session_id: str = None):
+        import uuid
+        self._session_id  = session_id or str(uuid.uuid4())
         self._entries: list[AuditEntry] = []
         self._reg_events: list[dict]    = []
-
+ 
     def record(self, agent_role, tool_name, arguments, outcome,
                detail=None, result=None) -> AuditEntry:
-        # Redact sensitive fields before logging (OWASP Section 7)
-        safe_args = _redact(arguments)
-        # Use safe error message in detail to avoid leaking internals
+        safe_args   = _redact(arguments)
         safe_detail = safe_error_message(outcome) if (detail and outcome != "allowed") else detail
-
+ 
         entry = AuditEntry(
             timestamp   = datetime.now(timezone.utc).isoformat(),
+            session_id  = self._session_id,
             agent_role  = agent_role,
             tool_name   = tool_name,
             arguments   = safe_args,
@@ -479,6 +585,7 @@ class AuditLog:
         if safe_detail and outcome != "allowed":
             logger.warning(f"     {safe_detail[:120]}")
         return entry
+ 
 
     def record_registration(self, server_url: str, clean: list,
                              blocked: list, manifest_hash: str):
@@ -533,14 +640,17 @@ class AuditLog:
 
 class SecurityFramework:
 
-    def __init__(self, mcp_client):
-        self.mcp      = mcp_client
-        self.access   = AccessControl()
-        self.ratelim  = RateLimiter()
-        self.inp      = InputValidator()
-        self.out      = OutputValidator()
-        self.tool_reg = ToolRegistrationValidator()
-        self.audit    = AuditLog()
+    def __init__(self, mcp_client, session_id: str = None):
+        import uuid
+        self.mcp        = mcp_client
+        self.session_id = session_id or str(uuid.uuid4())
+        self.access     = AccessControl()
+        self.ratelim    = RateLimiter()
+        self.inp        = InputValidator()
+        self.out        = OutputValidator()
+        self.tool_reg   = ToolRegistrationValidator()
+        self.audit      = AuditLog(session_id=self.session_id)
+        logger.info(f"[FRAMEWORK] Session {self.session_id[:16]} initialized")
 
     def register_server(self, server_url: str, tools: list) -> list:
         clean, blocked = self.tool_reg.validate_tools(tools, server_url)
@@ -550,7 +660,8 @@ class SecurityFramework:
 
     def validate_handoff(self, source_agent: str, target_agent: str,
                           output: str) -> str:
-        result = self.inp.validate_agent_output(source_agent, output)
+        result = self.inp.validate_agent_output(source_agent, output,
+                                                 expected_target=target_agent)
         if not result.passed:
             self.audit.record_interagent_block(source_agent, target_agent, result.reason)
             raise ValueError(safe_error_message("blocked_interagent"))
@@ -564,13 +675,27 @@ class SecurityFramework:
             return {}
         return context
 
+    def validate_external_data(self, source: str, data: str) -> str:
+        """
+        Validate data from external sources before it enters the pipeline.
+        Call this before storing external data in memory or passing it to agents.
+        Covers: malicious data injection, web content poisoning (partial).
+        """
+        result = self.inp.validate_external_data(source, data)
+        if not result.passed:
+            self.audit.record("external", f"[external:{source}]", {},
+                               "blocked_data", result.reason)
+            logger.warning(result.reason)
+            raise ValueError(safe_error_message("blocked_data"))
+        return data
+
     def call_tool(self, agent_role: str, tool_name: str,
                   arguments: dict) -> str:
 
         # Layer 1: Access control
         try:
             self.access.check(agent_role, tool_name)
-        except PermissionError as e:
+        except PermissionError:
             self.audit.record(agent_role, tool_name, arguments, "blocked_access")
             raise PermissionError(safe_error_message("blocked_access")) from None
 
@@ -581,7 +706,7 @@ class SecurityFramework:
             self.audit.record(agent_role, tool_name, arguments, "blocked_rate")
             raise RuntimeError(safe_error_message("blocked_rate")) from None
 
-        # Layer 3: Input validation (schema + injection patterns)
+        # Layer 3: Input validation
         iv = self.inp.validate(tool_name, arguments)
         if not iv.passed:
             self.audit.record(agent_role, tool_name, arguments,
@@ -591,19 +716,18 @@ class SecurityFramework:
         # MCP call
         try:
             raw = self.mcp.call_tool(tool_name, arguments)
-        except Exception as e:
+        except Exception:
             self.audit.record(agent_role, tool_name, arguments, "error")
-            # Safe error: do not propagate internal exception details to LLM
             raise RuntimeError(safe_error_message("error")) from None
 
-        # Layer 4: Output validation
+        # Layer 4: Output validation (mode selected by tool origin)
         ov = self.out.validate(tool_name, raw)
         if not ov.passed:
             self.audit.record(agent_role, tool_name, arguments,
                               ov.outcome, ov.reason, raw)
             raise ValueError(safe_error_message(ov.outcome))
 
-        # Layer 5: Audit log (allowed)
+        # Layer 5: Audit log
         self.audit.record(agent_role, tool_name, arguments, "allowed", result=raw)
         return raw
 

@@ -1,9 +1,10 @@
 """
 agents/agents.py — L1 agents using the SecurityFramework.
 
-Same logic as SOC-arch but all tool calls go through framework.call_tool()
-instead of mcp.call_tool() directly. Memory context is validated before
-injection. Handoffs are validated before passing to next agent.
+Group 2 controls added:
+  - session_id: passed through all agents for audit traceability
+  - justification validation: response agent output validated against
+    manipulation patterns (human-agent trust manipulation)
 """
 
 import json
@@ -42,6 +43,53 @@ RESPONSE_TOOLS = {
     "propose_wazuh_rule",
 }
 
+# ── [NEW] Human-agent trust manipulation patterns ─────────────────────────────
+# Applied to the response agent's justification field to detect if the agent
+# is being manipulated into requesting unnecessary human approvals or into
+# making the analyst act on fabricated urgency.
+_TRUST_MANIPULATION_PATTERNS = [
+    r"(critical|urgent|immediate)\s+(action|response|approval)\s+required\s+by\s+(policy|regulation|compliance)",
+    r"failure\s+to\s+approve\s+will\s+(result|cause|lead)",
+    r"(security\s+team|management|ciso|ceo)\s+(has\s+)?(requested|mandated|ordered|requires?)",
+    r"(regulatory|legal|compliance)\s+(requirement|obligation|mandate)\s+(requires?|demands?|forces?)",
+    r"you\s+(must|have\s+to|need\s+to)\s+approve\s+(this|immediately|now|urgently)",
+    r"automatic(ally)?\s+(approved|authorized|executed)\s+(if|unless|when)\s+not\s+(reviewed|rejected)",
+    r"(override|bypass)\s+(security|approval|review)\s+(process|procedure|requirement)",
+]
+_COMPILED_TRUST = [re.compile(p, re.IGNORECASE)
+                   for p in _TRUST_MANIPULATION_PATTERNS]
+
+
+def _validate_response_justification(response: dict) -> dict:
+    """
+    [NEW] Human-agent trust manipulation validation.
+    Scans the response agent's summary and action reasons for patterns
+    that attempt to manipulate the analyst into approving actions under
+    false urgency or fabricated authority.
+    Returns the response with a warning flag if manipulation is detected.
+    """
+    fields_to_check = [response.get("summary", "")]
+    for action in response.get("recommended_actions", []):
+        fields_to_check.append(action.get("reason", ""))
+
+    for text in fields_to_check:
+        if not text:
+            continue
+        for pattern in _COMPILED_TRUST:
+            if pattern.search(text):
+                logger.warning(
+                    f"[TRUST MANIPULATION] Suspicious justification detected "
+                    f"in response agent output. Pattern: /{pattern.pattern}/"
+                )
+                response["_trust_manipulation_warning"] = (
+                    "Response contains justification patterns associated with "
+                    "human-agent trust manipulation. Human review recommended."
+                )
+                response["requires_human_approval"] = True
+                return response
+
+    return response
+
 
 def _to_openai(tools: list) -> list:
     return [
@@ -66,7 +114,6 @@ def _run_agent(
     allowed_tools: set,
     max_iters:     int = 8,
 ) -> str:
-    # Get tools filtered by role through the framework
     all_tools    = framework.get_tools_for(role)
     tools        = [t for t in all_tools if t["name"] in allowed_tools]
     openai_tools = _to_openai(tools)
@@ -100,7 +147,6 @@ def _run_agent(
             logger.info(f"    -> {name}({args})")
 
             try:
-                # ALL tool calls go through the framework
                 result = framework.call_tool(role, name, args)
             except (PermissionError, ValueError, RuntimeError) as e:
                 result = f"BLOCKED BY SECURITY FRAMEWORK: {e}"
@@ -123,10 +169,10 @@ def _run_agent(
 # ══════════════════════════════════════════════════════════════════════════════
 
 def run_triage_agent(alert_text: str, framework: SecurityFramework,
-                     memory: MemoryStore) -> dict:
+                     memory: MemoryStore,
+                     session_id: str = None) -> dict:
     logger.info("[TRIAGE] Starting")
 
-    # Validate memory context before injection (Layer 3 - memory poisoning)
     raw_context = memory.get_context()
     context     = framework.validate_memory_context(raw_context)
     recent      = memory.get_recent_alerts(limit=3)
@@ -175,7 +221,8 @@ Respond ONLY with a valid JSON object, no markdown:
 
 def run_enrichment_agent(alert_text: str, triage: dict,
                           framework: SecurityFramework,
-                          memory: MemoryStore) -> dict:
+                          memory: MemoryStore,
+                          session_id: str = None) -> dict:
     logger.info("[ENRICHMENT] Starting")
 
     raw_context = memory.get_context()
@@ -236,7 +283,8 @@ Respond ONLY with a valid JSON object, no markdown:
 
 def run_response_agent(alert_text: str, triage: dict, enrichment: dict,
                         framework: SecurityFramework,
-                        memory: MemoryStore) -> dict:
+                        memory: MemoryStore,
+                        session_id: str = None) -> dict:
     logger.info("[RESPONSE] Starting")
 
     raw_context = memory.get_context()
@@ -279,6 +327,11 @@ Respond ONLY with a valid JSON object, no markdown:
     raw = _run_agent("response_agent", system, user_msg,
                      framework, RESPONSE_TOOLS)
     try:
-        return json.loads(raw)
+        result = json.loads(raw)
     except json.JSONDecodeError:
         return {"error": "non-JSON", "raw": raw}
+
+    # [NEW] Human-agent trust manipulation validation
+    result = _validate_response_justification(result)
+
+    return result

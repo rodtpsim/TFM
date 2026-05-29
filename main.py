@@ -1,24 +1,20 @@
 """
 main.py — SOC Multi-Agent System with Security Framework.
 
-Same pipeline as SOC-arch but with the SecurityFramework active:
-  - Tool registration validator runs at connection time
-  - All tool calls pass through the 5 framework layers
-  - Memory context validated before injection
-  - Inter-agent handoffs validated
-
-Usage:
-  python main.py
-  python main.py --alert "SSH brute force on node1"
-  python main.py --show-memory
-  python main.py --reset-memory
+Group 2 controls added:
+  - session_id: UUID per pipeline execution for session state integrity
+  - oversight saturation: pipeline rate limit at orchestrator level
+  - human-agent trust manipulation: justification validation in response agent
 """
 
 import os
 import sys
 import json
+import uuid
+import time
 import logging
 import argparse
+from collections import deque
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -29,9 +25,44 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-WAZUH_URL  = os.getenv("MCP_SERVER_URL", "http://192.168.56.110:8080/mcp")
+WAZUH_URL  = os.getenv("MCP_SERVER_URL", "http://127.0.0.1:8085/mcp")
 EVIL_URL   = os.getenv("EVIL_MCP_URL",   "http://127.0.0.1:8089/mcp")
 MEMORY_DIR = os.getenv("MEMORY_DIR",     "./memory_data")
+
+# ── [NEW] Oversight saturation control ────────────────────────────────────────
+# Limits the number of complete pipelines that can request human approval
+# within a sliding time window. Prevents consent fatigue attacks where the
+# system floods the analyst with approval requests.
+_APPROVAL_WINDOW_SECONDS = 3600   # 1 hour
+_MAX_APPROVALS_PER_WINDOW = 10    # max human approval requests per hour
+_pipeline_approval_timestamps: deque = deque()
+
+
+def _check_oversight_saturation(requires_approval: bool) -> bool:
+    """
+    [NEW] Oversight saturation / consent fatigue control.
+    Returns True if the approval request is allowed, False if rate-limited.
+    """
+    if not requires_approval:
+        return True
+
+    now = time.time()
+    # Remove timestamps outside the window
+    while _pipeline_approval_timestamps and \
+          now - _pipeline_approval_timestamps[0] > _APPROVAL_WINDOW_SECONDS:
+        _pipeline_approval_timestamps.popleft()
+
+    if len(_pipeline_approval_timestamps) >= _MAX_APPROVALS_PER_WINDOW:
+        logger.warning(
+            f"[OVERSIGHT SATURATION] BLOCKED: "
+            f"{_MAX_APPROVALS_PER_WINDOW} human approval requests already "
+            f"issued in the last {_APPROVAL_WINDOW_SECONDS//60} minutes. "
+            f"Possible consent fatigue attack."
+        )
+        return False
+
+    _pipeline_approval_timestamps.append(now)
+    return True
 
 
 def _section(title, data):
@@ -80,6 +111,12 @@ def run(custom_alert=None):
                                 run_enrichment_agent,
                                 run_response_agent)
 
+    # [NEW] Session ID — unique per pipeline execution.
+    # Provides session-level traceability in the audit log and enables
+    # detection of session state corruption across pipeline runs.
+    session_id = str(uuid.uuid4())
+    logger.info(f"Session ID: {session_id}")
+
     memory = MemoryStore(MEMORY_DIR)
 
     print(f"\n{'='*60}")
@@ -87,6 +124,7 @@ def run(custom_alert=None):
     print(f"  Wazuh MCP  : {WAZUH_URL}")
     print(f"  Evil MCP   : {EVIL_URL}")
     print(f"  Memory dir : {MEMORY_DIR}")
+    print(f"  Session ID : {session_id[:16]}...")
     print(f"{'='*60}")
 
     stats = memory.stats()
@@ -99,7 +137,7 @@ def run(custom_alert=None):
     evil_mcp  = MCPClient(EVIL_URL)
 
     wazuh_mcp.connect()
-    framework = SecurityFramework(wazuh_mcp)
+    framework = SecurityFramework(wazuh_mcp, session_id=session_id)
     print(f"\n  Wazuh MCP connected")
 
     # Tool registration validation for Wazuh
@@ -151,7 +189,8 @@ def run(custom_alert=None):
     print("  Running L1 pipeline with security framework...")
 
     # Triage
-    triage = run_triage_agent(alert_text, framework, memory)
+    triage = run_triage_agent(alert_text, framework, memory,
+                               session_id=session_id)
     _section("TRIAGE", triage)
 
     # Validate handoff triage -> enrichment
@@ -168,7 +207,8 @@ def run(custom_alert=None):
         triage = {"severity": "unknown", "error": "handoff blocked"}
 
     # Enrichment
-    enrichment = run_enrichment_agent(alert_text, triage, framework, memory)
+    enrichment = run_enrichment_agent(alert_text, triage, framework, memory,
+                                       session_id=session_id)
     _section("ENRICHMENT", enrichment)
 
     # Validate handoff enrichment -> response
@@ -185,9 +225,20 @@ def run(custom_alert=None):
 
     # Response
     response = run_response_agent(
-        alert_text, triage, enrichment, framework, memory
+        alert_text, triage, enrichment, framework, memory,
+        session_id=session_id
     )
     _section("RESPONSE PLAN", response)
+
+    # [NEW] Oversight saturation check
+    requires_approval = response.get("requires_human_approval", False)
+    approval_allowed  = _check_oversight_saturation(requires_approval)
+    if not approval_allowed:
+        response["requires_human_approval"] = False
+        response["_approval_suppressed"] = (
+            "Approval request suppressed: oversight saturation limit reached."
+        )
+        logger.warning("  [OVERSIGHT] Human approval request suppressed.")
 
     # Summary
     print(f"\n{'='*60}")
@@ -196,6 +247,8 @@ def run(custom_alert=None):
     print(f"  Escalate   : {'YES -> L2' if triage.get('escalate') else 'No'}")
     print(f"  Actions    : {len(response.get('recommended_actions',[]))} recommended")
     print(f"  Human appr.: {'Required' if response.get('requires_human_approval') else 'Not required'}")
+    if response.get("_approval_suppressed"):
+        print(f"  WARNING    : {response['_approval_suppressed']}")
     print(f"{'='*60}")
 
     framework.print_audit_summary()
